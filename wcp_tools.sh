@@ -149,3 +149,4 @@ if [ ! -f ~/.wcp_tools_setup_complete ]; then
 fi
 
 # Show the menu in a loop until the user quits
+main_menu
