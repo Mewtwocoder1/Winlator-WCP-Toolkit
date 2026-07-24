@@ -25,52 +25,51 @@ initial_setup() {
     echo "Storage permission granted!"; sleep 2
 }
 
-# Universal conversion logic for tar-based archives
 convert_component() {
-    local archive_path="$1" comp_type="$2" dlls_system32="$3" dlls_syswow64="$4" decompress_prog="$5"
+    local archive_path="$1" comp_type="$2" decompress_prog="$3"
     local filename=$(basename "$archive_path")
-    # Extract version from filename 
-    local version=$(echo "$filename" | sed -n 's/.*-\([0-9]\+\.[0-9.]\+\)\.tar\..*/\1/p')
-    if [[ -z "$version" ]]; then version="unknown"; fi
-
-    echo "--- Processing: $filename ---"
-    rm -rf "$TEMP_DIR"; mkdir -p "$TEMP_DIR"
-
-    echo "Extracting archive..."
-    tar --use-compress-program="$decompress_prog" -xf "$archive_path" -C "$TEMP_DIR"
-    local work_dir
-    work_dir="$(find "$TEMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
-    if [ -z "$work_dir" ]; then work_dir="$TEMP_DIR"; fi
     
-    # Standardize folder names
-    [ -d "$work_dir/x64" ] && mv "$work_dir/x64" "$work_dir/system32"
-    [ -d "$work_dir/x32" ] && mv "$work_dir/x32" "$work_dir/syswow64" # For DXVK
-    [ -d "$work_dir/x86" ] && mv "$work_dir/x86" "$work_dir/syswow64" # For vkd3d-proton
+    local version=$(echo "$filename" | sed -n 's/.*-\([0-9]\+\.[0-9.]*\(-[0-9A-Za-z]\+\)\?\)\.tar\..*/\1/p')
+    if [[ -z "$version" ]]; then version="1.0"; fi
 
-    # Create profile.json from a template using jq
+    echo "--- Processing [$comp_type]: $filename ---"
+    rm -rf "$TEMP_DIR"; mkdir -p "$TEMP_DIR/staging"
+
+    # Extract source directly into staging root
+    tar --use-compress-program="$decompress_prog" -xf "$archive_path" -C "$TEMP_DIR/staging" --strip-components=1 2>/dev/null \
+      || tar --use-compress-program="$decompress_prog" -xf "$archive_path" -C "$TEMP_DIR/staging"
+    
+    local work_dir="$TEMP_DIR/staging"
     local profile_path="$work_dir/profile.json"
-    echo "Generating profile.json..."
-    jq -n --arg type "$comp_type" --arg name "$version" --arg desc "$comp_type-$version" \
-      '{type: $type, versionName: $name, versionCode: 0, description: $desc, files: []}' > "$profile_path"
 
-    # Add file entries to the profile manifest
-    for dll in $dlls_system32; do
-        if [ -f "$work_dir/system32/$dll.dll" ]; then
-            jq --arg src "system32/$dll.dll" --arg tgt "\${system32}/$dll.dll" '.files += [{"source":$src, "target":$tgt}]' "$profile_path" > tmp.json && mv tmp.json "$profile_path"
-        fi
-    done
-    for dll in $dlls_syswow64; do
-        if [ -f "$work_dir/syswow64/$dll.dll" ]; then
-            jq --arg src "syswow64/$dll.dll" --arg tgt "\${syswow64}/$dll.dll" '.files += [{"source":$src, "target":$tgt}]' "$profile_path" > tmp.json && mv tmp.json "$profile_path"
-        fi
-    done
-    
-    # Create the final .wcp archive
+    # Standardize DXVK/VKD3D DLL directories
+    [ -d "$work_dir/x64" ] && mv "$work_dir/x64" "$work_dir/system32"
+    [ -d "$work_dir/x32" ] && mv "$work_dir/x32" "$work_dir/syswow64"
+    [ -d "$work_dir/x86" ] && mv "$work_dir/x86" "$work_dir/syswow64"
+
+    # Create profile.json with valid integer versionCode
+    jq -n --arg type "$comp_type" --arg name "$version" --arg desc "$comp_type $version" \
+      '{type: $type, versionName: $name, versionCode: 1, description: $desc, files: []}' > "$profile_path"
+
+    # Register DLL entries for DXVK/VKD3D
+    if [[ "$comp_type" == "DXVK" || "$comp_type" == "VKD3D" ]]; then
+        local dlls="d3d8 d3d9 d3d10 d3d10_1 d3d10core d3d11 d3d12 d3d12core dxgi"
+        for dll in $dlls; do
+            if [ -f "$work_dir/system32/$dll.dll" ]; then
+                jq --arg src "system32/$dll.dll" --arg tgt "\${system32}/$dll.dll" '.files += [{"source":$src, "target":$tgt}]' "$profile_path" > tmp.json && mv tmp.json "$profile_path"
+            fi
+            if [ -f "$work_dir/syswow64/$dll.dll" ]; then
+                jq --arg src "syswow64/$dll.dll" --arg tgt "\${syswow64}/$dll.dll" '.files += [{"source":$src, "target":$tgt}]' "$profile_path" > tmp.json && mv tmp.json "$profile_path"
+            fi
+        done
+    fi
+
+    # Pack directly from work_dir root using zstd compression
     local output_file="${filename%.tar.*}.wcp"
     echo "Creating $output_file..."
-    (cd "$work_dir" && tar --use-compress-program=zstd -cf "$DOWNLOAD_DIR/$output_file" ./*)
+    tar --use-compress-program="zstd -19" -cf "$DOWNLOAD_DIR/$output_file" -C "$work_dir" .
     
-    echo "--- Success! Created $output_file in your Downloads folder. ---"
+    echo "--- Successfully created $output_file ---"
     rm -rf "$TEMP_DIR"
 }
 
