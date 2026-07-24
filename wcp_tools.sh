@@ -18,8 +18,7 @@ initial_setup() {
     print_header
     echo "Performing first-time setup... This may take a few minutes."
     pkg update -y && pkg upgrade -y
-    # jq is a powerful command-line JSON processor, essential for this script.
-    pkg install -y git tar zstd binutils python jq -y
+    pkg install -y git tar zstd binutils python jq
     termux-setup-storage
     echo "Waiting for you to grant storage permission..."
     while [ ! -d "$DOWNLOAD_DIR" ]; do sleep 2; done
@@ -27,11 +26,6 @@ initial_setup() {
 }
 
 # Universal conversion logic for tar-based archives
-# $1: Full path to the archive file
-# $2: Component type (DXVK, VKD3D-proton)
-# $3: List of DLLs for system32
-# $4: List of DLLs for syswow64
-# $5: Decompression program for tar (e.g., 'gunzip', 'unzstd')
 convert_component() {
     local archive_path="$1" comp_type="$2" dlls_system32="$3" dlls_syswow64="$4" decompress_prog="$5"
     local filename=$(basename "$archive_path")
@@ -44,7 +38,9 @@ convert_component() {
 
     echo "Extracting archive..."
     tar --use-compress-program="$decompress_prog" -xf "$archive_path" -C "$TEMP_DIR"
-    local work_dir="$TEMP_DIR/$(ls "$TEMP_DIR")"
+    local work_dir
+    work_dir="$(find "$TEMP_DIR" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+    if [ -z "$work_dir" ]; then work_dir="$TEMP_DIR"; fi
     
     # Standardize folder names
     [ -d "$work_dir/x64" ] && mv "$work_dir/x64" "$work_dir/system32"
@@ -60,12 +56,12 @@ convert_component() {
     # Add file entries to the profile manifest
     for dll in $dlls_system32; do
         if [ -f "$work_dir/system32/$dll.dll" ]; then
-            jq --arg src "system32/$dll.dll" --arg tgt "\${system32}/$dll.dll" '.files += [{"source":$src, "target":$tgt}]' "$profile_path" >tmp.json && mv tmp.json "$profile_path"
+            jq --arg src "system32/$dll.dll" --arg tgt "\${system32}/$dll.dll" '.files += [{"source":$src, "target":$tgt}]' "$profile_path" > tmp.json && mv tmp.json "$profile_path"
         fi
     done
     for dll in $dlls_syswow64; do
         if [ -f "$work_dir/syswow64/$dll.dll" ]; then
-            jq --arg src "syswow64/$dll.dll" --arg tgt "\${syswow64}/$dll.dll" '.files += [{"source":$src, "target":$tgt}]' "$profile_path" >tmp.json && mv tmp.json "$profile_path"
+            jq --arg src "syswow64/$dll.dll" --arg tgt "\${syswow64}/$dll.dll" '.files += [{"source":$src, "target":$tgt}]' "$profile_path" > tmp.json && mv tmp.json "$profile_path"
         fi
     done
     
@@ -76,6 +72,19 @@ convert_component() {
     
     echo "--- Success! Created $output_file in your Downloads folder. ---"
     rm -rf "$TEMP_DIR"
+}
+
+organize_downloads() {
+    local source_files=("$@")
+    local output_dir="$DOWNLOAD_DIR/_wcp_output"; local source_dir="$DOWNLOAD_DIR/_source_archives"
+    mkdir -p "$output_dir" "$source_dir"
+    
+    echo "Organizing files..."
+    for file in "${source_files[@]}"; do mv "$file" "$source_dir/" 2>/dev/null; done
+    for wcp_file in "$DOWNLOAD_DIR"/*.wcp; do
+        if [ -f "$wcp_file" ]; then mv "$wcp_file" "$output_dir/" 2>/dev/null; fi
+    done
+    echo "Moved .wcp files to '_wcp_output' and source archives to '_source_archives'."
 }
 
 batch_process() {
@@ -107,20 +116,9 @@ batch_process() {
     else
         echo "No compatible archives (.tar.gz, .tar.zst) found in your Downloads folder."
     fi
-    echo -e "\nPress Enter to return to the menu."; read
-}
-
-organize_downloads() {
-    local source_files=("$@")
-    local output_dir="$DOWNLOAD_DIR/_wcp_output"; local source_dir="$DOWNLOAD_DIR/_source_archives"
-    mkdir -p "$output_dir" "$source_dir"
     
-    echo "Organizing files..."
-    for file in "${source_files[@]}"; do mv "$file" "$source_dir/" 2>/dev/null; done
-    for wcp_file in "$DOWNLOAD_DIR"/*.wcp; do
-        if [ -f "$wcp_file" ]; then mv "$wcp_file" "$output_dir/" 2>/dev/null; fi
-    done
-    echo "Moved .wcp files to '_wcp_output' and source archives to '_source_archives'."
+    echo
+    read -r -p "Press Enter to return to the menu..." _
 }
 
 # --- Main Menu ---
@@ -132,21 +130,30 @@ main_menu() {
     echo " 1. Batch Convert All Files in Download Folder"
     echo " q. Quit"
     echo
-    read -p "Enter your choice: " choice
+    
+    # Prevent infinite loop on EOF/read failure
+    if ! read -r -p "Enter your choice: " choice; then
+        echo -e "\nExiting."
+        exit 0
+    fi
 
-    case $choice in
+    case "$choice" in
         1) batch_process ;;
         q|Q) echo "Exiting."; exit 0 ;;
-        *) echo "Invalid choice. Press Enter to try again."; read ;;
+        *) 
+           echo -e "\nInvalid choice."
+           read -r -p "Press Enter to try again..." _
+           ;;
     esac
 }
 
 # --- Script Entry Point ---
-# Run setup only once by creating a hidden marker file
 if [ ! -f ~/.wcp_tools_setup_complete ]; then
     initial_setup
     touch ~/.wcp_tools_setup_complete
 fi
 
-# Show the menu in a loop until the user quits
-main_menu
+# Show menu loop
+while true; do
+    main_menu
+done
